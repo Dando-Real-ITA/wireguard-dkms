@@ -14,6 +14,7 @@
 #include <linux/if_vlan.h>
 #include <linux/if_ether.h>
 #include <linux/inetdevice.h>
+#include <linux/version.h>
 #include <net/udp_tunnel.h>
 #include <net/ipv6.h>
 
@@ -335,7 +336,11 @@ static void sock_free(struct sock *sock)
 	if (unlikely(!sock))
 		return;
 	sk_clear_memalloc(sock);
+	#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+	udp_tunnel_sock_release(sock->sk_socket);
+	#else
 	udp_tunnel_sock_release(sock);
+	#endif
 }
 
 static void set_sock_opts(struct socket *sock)
@@ -389,14 +394,22 @@ retry:
 		goto out;
 	}
 	set_sock_opts(new4);
+	#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+	setup_udp_tunnel_sock(net, new4, &cfg);
+	#else
 	setup_udp_tunnel_sock(net, new4->sk, &cfg);
+	#endif
 
 #if IS_ENABLED(CONFIG_IPV6)
 	if (ipv6_mod_enabled()) {
 		port6.local_udp_port = inet_sk(new4->sk)->inet_sport;
 		ret = udp_sock_create(net, &port6, &new6);
 		if (ret < 0) {
+			#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+			udp_tunnel_sock_release(new4);
+			#else
 			udp_tunnel_sock_release(new4->sk);
+			#endif
 			if (ret == -EADDRINUSE && !port && retries++ < 100)
 				goto retry;
 			pr_err("%s: Could not create IPv6 socket\n",
@@ -404,7 +417,11 @@ retry:
 			goto out;
 		}
 		set_sock_opts(new6);
+		#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+		setup_udp_tunnel_sock(net, new6, &cfg);
+		#else
 		setup_udp_tunnel_sock(net, new6->sk, &cfg);
+		#endif
 	}
 #endif
 

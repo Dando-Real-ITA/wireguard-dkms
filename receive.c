@@ -14,6 +14,7 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/udp.h>
+#include <linux/version.h>
 #include <net/ip_tunnels.h>
 
 /* Must be called with bh disabled. */
@@ -62,7 +63,11 @@ static int prepare_skb_header(struct sk_buff *skb, struct wg_device *wg)
 		 * to have UDP fields.
 		 */
 		return -EINVAL;
+	#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+	data_len = ntohs(udp->len);
+	#else
 	data_len = udp_get_len_short(udp);
+	#endif
 	if (unlikely(data_len < sizeof(struct udphdr) ||
 		     data_len > skb->len - data_offset))
 		/* UDP packet is reporting too small of a size or lying about
