@@ -49,6 +49,6 @@
 modules.order
 Module.symvers
 Mkfile.old
-dkms.conf
+dkms.package_version.conf
 
 .vscode/
