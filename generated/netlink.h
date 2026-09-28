@@ -16,7 +16,8 @@
 
 /* Common nested types */
 extern const struct nla_policy wireguard_wgallowedip_nl_policy[WGALLOWEDIP_A_FLAGS + 1];
-extern const struct nla_policy wireguard_wgpeer_nl_policy[WGPEER_A_PROTOCOL_VERSION + 1];
+extern const struct nla_policy wireguard_wgallowedroute_nl_policy[WGALLOWEDROUTE_A_FLAGS + 1];
+extern const struct nla_policy wireguard_wgpeer_nl_policy[WGPEER_A_MAX + 1];
 
 /* Ops table for wireguard */
 extern const struct genl_split_ops wireguard_nl_ops[2];
