@@ -9,6 +9,7 @@
 #include "socket.h"
 #include "queueing.h"
 #include "messages.h"
+#include "allowedroutes.h"
 #include "generated/netlink.h"
 
 #include <uapi/linux/wireguard.h>
@@ -64,11 +65,42 @@ static int get_allowedips(struct sk_buff *skb, const u8 *ip, u8 cidr,
 	return 0;
 }
 
+static int get_allowedroute(struct sk_buff *skb, const u8 *src, u8 src_cidr,
+			     int src_family, const u8 *dst, u8 dst_cidr,
+			     int dst_family, u8 action)
+{
+	struct nlattr *allowedroute_nest;
+
+	allowedroute_nest = nla_nest_start(skb, 0);
+	if (!allowedroute_nest)
+		return -EMSGSIZE;
+
+	if (nla_put_u16(skb, WGALLOWEDROUTE_A_SRC_FAMILY, src_family) ||
+	    nla_put(skb, WGALLOWEDROUTE_A_SRC_IPADDR,
+		    src_family == AF_INET6 ? sizeof(struct in6_addr) : sizeof(struct in_addr),
+		    src) ||
+	    nla_put_u8(skb, WGALLOWEDROUTE_A_SRC_CIDR_MASK, src_cidr) ||
+	    nla_put_u16(skb, WGALLOWEDROUTE_A_DST_FAMILY, dst_family) ||
+	    nla_put(skb, WGALLOWEDROUTE_A_DST_IPADDR,
+		    dst_family == AF_INET6 ? sizeof(struct in6_addr) : sizeof(struct in_addr),
+		    dst) ||
+	    nla_put_u8(skb, WGALLOWEDROUTE_A_DST_CIDR_MASK, dst_cidr) ||
+	    nla_put_u8(skb, WGALLOWEDROUTE_A_ACTION, action)) {
+		nla_nest_cancel(skb, allowedroute_nest);
+		return -EMSGSIZE;
+	}
+
+	nla_nest_end(skb, allowedroute_nest);
+	return 0;
+}
+
 struct dump_ctx {
 	struct wg_device *wg;
 	struct wg_peer *next_peer;
 	u64 allowedips_seq;
+	u64 allowedroutes_seq;
 	struct allowedips_node *next_allowedip;
+	struct allowedroute *next_allowedroute;
 };
 
 #define DUMP_CTX(cb) ((struct dump_ctx *)(cb)->args)
@@ -77,8 +109,10 @@ static int
 get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 {
 
-	struct nlattr *allowedips_nest, *peer_nest = nla_nest_start(skb, 0);
+	struct nlattr *allowedips_nest, *allowedroutes_nest;
+	struct nlattr *peer_nest = nla_nest_start(skb, 0);
 	struct allowedips_node *allowedips_node = ctx->next_allowedip;
+	struct allowedroute *allowedroute = ctx->next_allowedroute;
 	bool fail;
 
 	if (!peer_nest)
@@ -91,7 +125,7 @@ get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 	if (fail)
 		goto err;
 
-	if (!allowedips_node) {
+	if (!allowedips_node && !allowedroute) {
 		const struct __kernel_timespec last_handshake = {
 			.tv_sec = peer->walltime_last_handshake.tv_sec,
 			.tv_nsec = peer->walltime_last_handshake.tv_nsec
@@ -131,6 +165,8 @@ get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 		allowedips_node =
 			list_first_entry_or_null(&peer->allowedips_list,
 					struct allowedips_node, peer_list);
+		allowedroute = list_first_entry_or_null(&peer->allowedroutes_list,
+					       struct allowedroute, peer_list);
 	}
 	if (!allowedips_node)
 		goto no_allowedips;
@@ -158,9 +194,42 @@ get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 	}
 	nla_nest_end(skb, allowedips_nest);
 no_allowedips:
+	if (!allowedroute)
+		goto no_allowedroutes;
+	if (!ctx->allowedroutes_seq)
+		ctx->allowedroutes_seq = ctx->wg->peer_allowedroutes.seq;
+	else if (ctx->allowedroutes_seq != ctx->wg->peer_allowedroutes.seq)
+		goto no_allowedroutes;
+
+	allowedroutes_nest = nla_nest_start(skb, WGPEER_A_ALLOWEDROUTES);
+	if (!allowedroutes_nest)
+		goto err;
+
+	list_for_each_entry_from(allowedroute, &peer->allowedroutes_list, peer_list) {
+		u8 action, src_cidr, dst_cidr;
+		u8 src[16], dst[16];
+		int src_family, dst_family;
+
+		if (wg_allowedroutes_read_rule(allowedroute, src, &src_cidr,
+					      &src_family, dst, &dst_cidr,
+					      &dst_family, &action))
+			continue;
+		if (get_allowedroute(skb, src, src_cidr, src_family, dst,
+				     dst_cidr, dst_family, action)) {
+			nla_nest_end(skb, allowedroutes_nest);
+			nla_nest_end(skb, peer_nest);
+			ctx->next_allowedip = NULL;
+			ctx->next_allowedroute = allowedroute;
+			return -EMSGSIZE;
+		}
+	}
+	nla_nest_end(skb, allowedroutes_nest);
+no_allowedroutes:
 	nla_nest_end(skb, peer_nest);
 	ctx->next_allowedip = NULL;
+	ctx->next_allowedroute = NULL;
 	ctx->allowedips_seq = 0;
+	ctx->allowedroutes_seq = 0;
 	return 0;
 err:
 	nla_nest_cancel(skb, peer_nest);
@@ -337,6 +406,63 @@ static int set_allowedip(struct wg_peer *peer, struct nlattr **attrs)
 	return ret;
 }
 
+static int set_allowedroute(struct wg_peer *peer, struct nlattr **attrs)
+{
+	int ret = -EINVAL;
+	u32 flags = 0;
+	u16 src_family, dst_family;
+	u8 src_cidr, dst_cidr;
+	u8 action = WGALLOWEDROUTE_ACTION_ALLOW;
+
+	if (!attrs[WGALLOWEDROUTE_A_SRC_FAMILY] ||
+	    !attrs[WGALLOWEDROUTE_A_SRC_IPADDR] ||
+	    !attrs[WGALLOWEDROUTE_A_SRC_CIDR_MASK] ||
+	    !attrs[WGALLOWEDROUTE_A_DST_FAMILY] ||
+	    !attrs[WGALLOWEDROUTE_A_DST_IPADDR] ||
+	    !attrs[WGALLOWEDROUTE_A_DST_CIDR_MASK])
+		return ret;
+	src_family = nla_get_u16(attrs[WGALLOWEDROUTE_A_SRC_FAMILY]);
+	dst_family = nla_get_u16(attrs[WGALLOWEDROUTE_A_DST_FAMILY]);
+	src_cidr = nla_get_u8(attrs[WGALLOWEDROUTE_A_SRC_CIDR_MASK]);
+	dst_cidr = nla_get_u8(attrs[WGALLOWEDROUTE_A_DST_CIDR_MASK]);
+	if (attrs[WGALLOWEDROUTE_A_ACTION])
+		action = nla_get_u8(attrs[WGALLOWEDROUTE_A_ACTION]);
+	if (attrs[WGALLOWEDROUTE_A_FLAGS])
+		flags = nla_get_u32(attrs[WGALLOWEDROUTE_A_FLAGS]);
+	if (src_family != dst_family)
+		return ret;
+
+	if (src_family == AF_INET &&
+	    nla_len(attrs[WGALLOWEDROUTE_A_SRC_IPADDR]) == sizeof(struct in_addr) &&
+	    nla_len(attrs[WGALLOWEDROUTE_A_DST_IPADDR]) == sizeof(struct in_addr)) {
+		if (flags & WGALLOWEDROUTE_F_REMOVE_ME)
+			ret = wg_allowedroutes_remove_v4(&peer->device->peer_allowedroutes,
+				peer, nla_data(attrs[WGALLOWEDROUTE_A_SRC_IPADDR]), src_cidr,
+				nla_data(attrs[WGALLOWEDROUTE_A_DST_IPADDR]), dst_cidr,
+				action, &peer->device->device_update_lock);
+		else
+			ret = wg_allowedroutes_insert_v4(&peer->device->peer_allowedroutes,
+				peer, nla_data(attrs[WGALLOWEDROUTE_A_SRC_IPADDR]), src_cidr,
+				nla_data(attrs[WGALLOWEDROUTE_A_DST_IPADDR]), dst_cidr,
+				action, &peer->device->device_update_lock);
+	} else if (src_family == AF_INET6 &&
+		   nla_len(attrs[WGALLOWEDROUTE_A_SRC_IPADDR]) == sizeof(struct in6_addr) &&
+		   nla_len(attrs[WGALLOWEDROUTE_A_DST_IPADDR]) == sizeof(struct in6_addr)) {
+		if (flags & WGALLOWEDROUTE_F_REMOVE_ME)
+			ret = wg_allowedroutes_remove_v6(&peer->device->peer_allowedroutes,
+				peer, nla_data(attrs[WGALLOWEDROUTE_A_SRC_IPADDR]), src_cidr,
+				nla_data(attrs[WGALLOWEDROUTE_A_DST_IPADDR]), dst_cidr,
+				action, &peer->device->device_update_lock);
+		else
+			ret = wg_allowedroutes_insert_v6(&peer->device->peer_allowedroutes,
+				peer, nla_data(attrs[WGALLOWEDROUTE_A_SRC_IPADDR]), src_cidr,
+				nla_data(attrs[WGALLOWEDROUTE_A_DST_IPADDR]), dst_cidr,
+				action, &peer->device->device_update_lock);
+	}
+
+	return ret;
+}
+
 static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 {
 	u8 *public_key = NULL, *preshared_key = NULL;
@@ -372,6 +498,7 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 
 		/* The peer is new, so there aren't allowed IPs to remove. */
 		flags &= ~WGPEER_F_REPLACE_ALLOWEDIPS;
+		flags &= ~WGPEER_F_REPLACE_ALLOWEDROUTES;
 
 		down_read(&wg->static_identity.lock);
 		if (wg->static_identity.has_identity &&
@@ -430,6 +557,9 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 	if (flags & WGPEER_F_REPLACE_ALLOWEDIPS)
 		wg_allowedips_remove_by_peer(&wg->peer_allowedips, peer,
 					     &wg->device_update_lock);
+	if (flags & WGPEER_F_REPLACE_ALLOWEDROUTES)
+		wg_allowedroutes_remove_by_peer(&wg->peer_allowedroutes, peer,
+					       &wg->device_update_lock);
 
 	if (attrs[WGPEER_A_ALLOWEDIPS]) {
 		struct nlattr *attr, *allowedip[WGALLOWEDIP_A_MAX + 1];
@@ -441,6 +571,21 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 			if (ret < 0)
 				goto out;
 			ret = set_allowedip(peer, allowedip);
+			if (ret < 0)
+				goto out;
+		}
+	}
+
+	if (attrs[WGPEER_A_ALLOWEDROUTES]) {
+		struct nlattr *attr, *allowedroute[WGALLOWEDROUTE_A_MAX + 1];
+		int rem;
+
+		nla_for_each_nested(attr, attrs[WGPEER_A_ALLOWEDROUTES], rem) {
+			ret = nla_parse_nested(allowedroute, WGALLOWEDROUTE_A_MAX,
+					       attr, NULL, NULL);
+			if (ret < 0)
+				goto out;
+			ret = set_allowedroute(peer, allowedroute);
 			if (ret < 0)
 				goto out;
 		}

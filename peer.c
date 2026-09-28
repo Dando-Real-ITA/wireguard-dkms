@@ -58,6 +58,7 @@ struct wg_peer *wg_peer_create(struct wg_device *wg,
 	napi_enable(&peer->napi);
 	list_add_tail(&peer->peer_list, &wg->peer_list);
 	INIT_LIST_HEAD(&peer->allowedips_list);
+	INIT_LIST_HEAD(&peer->allowedroutes_list);
 	wg_pubkey_hashtable_add(wg->peer_hashtable, peer);
 	++wg->num_peers;
 	pr_debug("%s: Peer %llu created\n", wg->dev->name, peer->internal_id);
@@ -83,6 +84,8 @@ static void peer_make_dead(struct wg_peer *peer)
 	list_del_init(&peer->peer_list);
 	wg_allowedips_remove_by_peer(&peer->device->peer_allowedips, peer,
 				     &peer->device->device_update_lock);
+	wg_allowedroutes_remove_by_peer(&peer->device->peer_allowedroutes, peer,
+					  &peer->device->device_update_lock);
 	wg_pubkey_hashtable_remove(peer->device->peer_hashtable, peer);
 
 	/* Mark as dead, so that we don't allow jumping contexts after. */

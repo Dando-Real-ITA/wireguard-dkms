@@ -7,6 +7,7 @@
 #include "peer.h"
 
 #include <net/ip6_route.h>
+#include <net/route.h>
 
 enum { MAX_ALLOWEDIPS_DEPTH = 129 };
 
@@ -161,6 +162,21 @@ static const struct in6_addr *ipv6_route_nexthop(const struct sk_buff *skb)
 		return NULL;
 	nexthop = rt6_nexthop(rt, &ipv6_hdr(skb)->daddr);
 	return ipv6_addr_any(nexthop) ? NULL : nexthop;
+}
+
+static const struct in_addr *ipv4_route_nexthop(const struct sk_buff *skb)
+{
+	const struct dst_entry *dst = skb_dst(skb);
+	const struct rtable *rt;
+
+	if (!dst)
+		return NULL;
+	rt = dst_rtable(dst);
+	if (rt->rt_gw_family != AF_INET)
+		return NULL;
+	if (rt_nexthop(rt, ip_hdr(skb)->daddr) == htonl(INADDR_ANY))
+		return NULL;
+	return (const struct in_addr *)&rt->rt_gw4;
 }
 
 static bool node_placement(struct allowedips_node __rcu *trie, const u8 *key,
@@ -414,11 +430,18 @@ struct wg_peer *wg_allowedips_lookup_dst(struct allowedips *table,
 					 struct sk_buff *skb)
 {
 	struct wg_peer *peer;
+	const struct in_addr *nexthop4;
 	const struct in6_addr *nexthop;
 
-	if (skb->protocol == htons(ETH_P_IP))
+	if (skb->protocol == htons(ETH_P_IP)) {
+		nexthop4 = ipv4_route_nexthop(skb);
+		if (nexthop4) {
+			peer = lookup(table->root4, 32, nexthop4);
+			if (peer)
+				return peer;
+		}
 		return lookup(table->root4, 32, &ip_hdr(skb)->daddr);
-	else if (skb->protocol == htons(ETH_P_IPV6)) {
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
 		nexthop = ipv6_route_nexthop(skb);
 		if (nexthop) {
 			peer = lookup(table->root6, 128, nexthop);
