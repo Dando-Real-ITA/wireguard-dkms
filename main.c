@@ -30,7 +30,8 @@ static int __init wg_mod_init(void)
 
 #ifdef DEBUG
 	ret = -ENOTRECOVERABLE;
-	if (!wg_allowedips_selftest() || !wg_packet_counter_selftest() ||
+	if (!wg_allowedips_selftest() || !wg_allowedroutes_selftest() ||
+	    !wg_packet_counter_selftest() ||
 	    !wg_ratelimiter_selftest())
 		goto err_peer;
 #endif

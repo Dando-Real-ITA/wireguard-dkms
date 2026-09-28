@@ -246,3 +246,5 @@ void wg_allowedroutes_slab_uninit(void)
 	rcu_barrier();
 	kmem_cache_destroy(allowedroute_cache);
 }
+
+#include "selftest/allowedroutes.c"

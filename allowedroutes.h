@@ -59,6 +59,10 @@ int wg_allowedroutes_read_rule(struct allowedroute *rule, u8 src[16], u8 *src_ci
 			       int *src_family, u8 dst[16], u8 *dst_cidr,
 			       int *dst_family, u8 *action);
 
+#ifdef DEBUG
+bool wg_allowedroutes_selftest(void);
+#endif
+
 int __init wg_allowedroutes_slab_init(void);
 void wg_allowedroutes_slab_uninit(void);
 
