@@ -45,19 +45,31 @@ sudo modprobe wireguard
 Current phase:
 
 - Outbound peer selection still uses AllowedIPs, but IPv6 transmit lookup now tries the route's gateway or nexthop first and falls back to the packet destination when no peer matches the routed nexthop.
-- Inbound packet processing temporarily bypasses the current AllowedIPs-based source ownership check after decryption.
+- Inbound packet processing can now apply an ordered per-peer `allowedroutes` policy after decryption.
 
 This phase is intended to allow routed IPv6 traffic through when the kernel has already resolved a gateway or nexthop that belongs to a peer. If the route was chosen from ECMP or a nexthop group, WireGuard follows the concrete member already selected for that packet instead of trying to reason about the whole group.
 
+## Allowedroutes
+
+`allowedroutes` is a receive-only policy mechanism.
+
+- `allowedips` still controls transmit peer selection.
+- `allowedroutes` evaluates decrypted packets against ordered `(source CIDR, destination CIDR, action)` rules on the receiving peer.
+- The first matching rule wins.
+- Supported actions are `allow` and `deny`.
+- If a peer has no configured `allowedroutes`, receive behavior defaults to allow-all.
+
+The new receive policy is additive from a netlink perspective. Existing standard clients that only configure ordinary WireGuard interfaces remain compatible with this module, but they will not configure `allowedroutes` until userspace support is added.
+
 ## Planned Allowedroutes Follow-Up
 
-The next phase is to add a separate inbound policy concept named `allowedroutes`.
+The next phase is to add userspace support for `allowedroutes`.
 
-- `allowedips` remains focused on transmit peer selection.
-- `allowedroutes` is planned to validate inbound packet flow per peer.
-- The intended model is to match both source and destination with their own CIDRs, including broad matches such as `::/0`, so receive-side filtering is separated from send-side routing decisions.
+- `wireguard-tools` needs syntax and netlink marshalling support for ordered rules with source, destination, and action.
+- `systemd-networkd` needs parser, netlink, and documentation support for the new peer attribute.
+- `netplan` needs schema, parser, renderer, and documentation support for the new rule model.
 
-The current receive path will keep the old AllowedIPs verification logic commented in place as the insertion point for that future work.
+See [ROUTES.md](ROUTES.md) for the cross-project implementation roadmap.
 
 ## Notes
 
