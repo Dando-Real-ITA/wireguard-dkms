@@ -343,7 +343,6 @@ static void wg_packet_consume_data_done(struct wg_peer *peer,
 {
 	struct net_device *dev = peer->device->dev;
 	unsigned int len, len_before_trim;
-	struct wg_peer *routed_peer;
 
 	wg_socket_set_peer_endpoint(peer, endpoint);
 
@@ -406,24 +405,29 @@ static void wg_packet_consume_data_done(struct wg_peer *peer,
 	if (unlikely(pskb_trim(skb, len)))
 		goto packet_processed;
 
-	routed_peer = wg_allowedips_lookup_src(&peer->device->peer_allowedips,
-					       skb);
-	wg_peer_put(routed_peer); /* We don't need the extra reference. */
-
-	if (unlikely(routed_peer != peer))
-		goto dishonest_packet_peer;
+	/*
+	 * Phase 1 bypasses the current AllowedIPs-based inbound source check.
+	 * Future allowedroutes receive-side policy should hook in here to
+	 * validate packet src and dst independently from TX peer selection.
+	 *
+	 * routed_peer = wg_allowedips_lookup_src(&peer->device->peer_allowedips,
+	 *				       skb);
+	 * wg_peer_put(routed_peer);
+	 * if (unlikely(routed_peer != peer))
+	 * 	goto dishonest_packet_peer;
+	 *
+	 * dishonest_packet_peer:
+	 * 	net_dbg_skb_ratelimited("%s: Packet has unallowed src IP (%pISc) from peer %llu (%pISpfsc)\n",
+	 * 				dev->name, skb, peer->internal_id,
+	 * 				&peer->endpoint.addr);
+	 * 	DEV_STATS_INC(dev, rx_errors);
+	 * 	DEV_STATS_INC(dev, rx_frame_errors);
+	 * 	goto packet_processed;
+	 */
 
 	napi_gro_receive(&peer->napi, skb);
 	update_rx_stats(peer, message_data_len(len_before_trim));
 	return;
-
-dishonest_packet_peer:
-	net_dbg_skb_ratelimited("%s: Packet has unallowed src IP (%pISc) from peer %llu (%pISpfsc)\n",
-				dev->name, skb, peer->internal_id,
-				&peer->endpoint.addr);
-	DEV_STATS_INC(dev, rx_errors);
-	DEV_STATS_INC(dev, rx_frame_errors);
-	goto packet_processed;
 dishonest_packet_type:
 	net_dbg_ratelimited("%s: Packet is neither ipv4 nor ipv6 from peer %llu (%pISpfsc)\n",
 			    dev->name, peer->internal_id, &peer->endpoint.addr);

@@ -6,6 +6,8 @@
 #include "allowedips.h"
 #include "peer.h"
 
+#include <net/ip6_route.h>
+
 enum { MAX_ALLOWEDIPS_DEPTH = 129 };
 
 static struct kmem_cache *node_cache;
@@ -139,6 +141,26 @@ retry:
 	}
 	rcu_read_unlock_bh();
 	return peer;
+}
+
+static const struct in6_addr *ipv6_route_nexthop(const struct sk_buff *skb)
+{
+	const struct dst_entry *dst = skb_dst(skb);
+	const struct rt6_info *rt;
+	const struct in6_addr *nexthop;
+
+	if (!dst)
+		return NULL;
+	/*
+	 * Use the nexthop from the IPv6 route already selected by the kernel.
+	 * If the route came from ECMP or a nexthop object, skb_dst(skb) has
+	 * already been resolved to the concrete member this packet will use.
+	 */
+	rt = dst_rt6_info(dst);
+	if (!(rt->rt6i_flags & RTF_GATEWAY))
+		return NULL;
+	nexthop = rt6_nexthop(rt, &ipv6_hdr(skb)->daddr);
+	return ipv6_addr_any(nexthop) ? NULL : nexthop;
 }
 
 static bool node_placement(struct allowedips_node __rcu *trie, const u8 *key,
@@ -391,10 +413,20 @@ int wg_allowedips_read_node(struct allowedips_node *node, u8 ip[16], u8 *cidr)
 struct wg_peer *wg_allowedips_lookup_dst(struct allowedips *table,
 					 struct sk_buff *skb)
 {
+	struct wg_peer *peer;
+	const struct in6_addr *nexthop;
+
 	if (skb->protocol == htons(ETH_P_IP))
 		return lookup(table->root4, 32, &ip_hdr(skb)->daddr);
-	else if (skb->protocol == htons(ETH_P_IPV6))
+	else if (skb->protocol == htons(ETH_P_IPV6)) {
+		nexthop = ipv6_route_nexthop(skb);
+		if (nexthop) {
+			peer = lookup(table->root6, 128, nexthop);
+			if (peer)
+				return peer;
+		}
 		return lookup(table->root6, 128, &ipv6_hdr(skb)->daddr);
+	}
 	return NULL;
 }
 
