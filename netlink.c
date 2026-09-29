@@ -12,7 +12,7 @@
 #include "allowedroutes.h"
 #include "generated/netlink.h"
 
-#include <uapi/linux/wireguard.h>
+#include "uapi/linux/wireguard.h"
 
 #include <linux/if.h>
 #include <net/genetlink.h>

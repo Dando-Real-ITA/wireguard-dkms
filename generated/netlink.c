@@ -10,7 +10,7 @@
 
 #include "netlink.h"
 
-#include <uapi/linux/wireguard.h>
+#include "../uapi/linux/wireguard.h"
 #include <linux/time_types.h>
 
 /* Common nested types */

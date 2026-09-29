@@ -4,8 +4,8 @@
 /* YNL-GEN uapi header */
 /* To regenerate run: tools/net/ynl/ynl-regen.sh */
 
-#ifndef _UAPI_LINUX_WIREGUARD_H
-#define _UAPI_LINUX_WIREGUARD_H
+#ifndef _WG_LOCAL_UAPI_LINUX_WIREGUARD_H
+#define _WG_LOCAL_UAPI_LINUX_WIREGUARD_H
 
 #define WG_GENL_NAME	"wireguard"
 #define WG_GENL_VERSION	1
@@ -104,4 +104,4 @@ enum wg_cmd {
 };
 #define WG_CMD_MAX (__WG_CMD_MAX - 1)
 
-#endif /* _UAPI_LINUX_WIREGUARD_H */
+#endif /* _WG_LOCAL_UAPI_LINUX_WIREGUARD_H */
