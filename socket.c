@@ -17,6 +17,11 @@
 #include <linux/version.h>
 #include <net/udp_tunnel.h>
 #include <net/ipv6.h>
+#include <generated/utsrelease.h>
+
+#ifndef UTS_UBUNTU_RELEASE_ABI
+#define UTS_UBUNTU_RELEASE_ABI 0
+#endif
 
 static int send4(struct wg_device *wg, struct sk_buff *skb,
 		 struct endpoint *endpoint, u8 ds, struct dst_cache *cache)
@@ -394,7 +399,7 @@ retry:
 		goto out;
 	}
 	set_sock_opts(new4);
-	#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+	#if UTS_UBUNTU_RELEASE_ABI < 38
 	setup_udp_tunnel_sock(net, new4, &cfg);
 	#else
 	setup_udp_tunnel_sock(net, new4->sk, &cfg);
@@ -417,7 +422,7 @@ retry:
 			goto out;
 		}
 		set_sock_opts(new6);
-		#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+		#if UTS_UBUNTU_RELEASE_ABI < 38
 		setup_udp_tunnel_sock(net, new6, &cfg);
 		#else
 		setup_udp_tunnel_sock(net, new6->sk, &cfg);
